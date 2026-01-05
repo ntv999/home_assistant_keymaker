@@ -1,0 +1,13 @@
+{
+  "domain": "nrf_gate_controller",
+  "name": "NRF Gate Controller",
+  "codeowners": ["@yourusername"],
+  "config_flow": true,
+  "dependencies": ["bluetooth"],
+  "documentation": "https://github.com/yourusername/nrf-gate-controller",
+  "integration_type": "device",
+  "iot_class": "local_polling",
+  "requirements": ["bleak>=0.21.0"],
+  "version": "1.0.0"
+}
+
