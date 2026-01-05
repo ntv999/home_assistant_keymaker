@@ -119,7 +119,10 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             # Perform actual scan
             _LOGGER.info("Starting BLE scan for NUS devices...")
             try:
-                devices = await GateControllerBLE.scan_for_devices(timeout=10.0)
+                devices = await GateControllerBLE.scan_for_devices(
+                    hass=self.hass,
+                    timeout=10.0
+                )
                 self._discovered_devices = {
                     device.address: device.name or device.address
                     for device in devices
@@ -135,12 +138,26 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                     )
 
             except Exception as e:
-                _LOGGER.exception("Scan failed: %s", e)
+                error_msg = str(e)
+                error_type = type(e).__name__
+                _LOGGER.exception("Scan failed: %s (type: %s)", error_msg, error_type)
+                
+                # Provide more specific error messages
+                if "permission" in error_msg.lower() or "access" in error_msg.lower():
+                    error_key = "scan_permission_denied"
+                elif "bluetooth" in error_msg.lower() and "not available" in error_msg.lower():
+                    error_key = "bluetooth_not_available"
+                elif "adapter" in error_msg.lower():
+                    error_key = "bluetooth_adapter_error"
+                else:
+                    error_key = "scan_failed"
+                
                 # Allow retry by resubmitting the form
                 return self.async_show_form(
                     step_id="scan",
                     data_schema=vol.Schema({}),
-                    errors={"base": "scan_failed"},
+                    errors={"base": error_key},
+                    description_placeholders={"error": error_msg},
                 )
 
             # Show device selection form
