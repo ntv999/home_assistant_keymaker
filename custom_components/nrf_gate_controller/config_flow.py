@@ -117,18 +117,36 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
         if user_input is None:
             # Perform actual scan
-            _LOGGER.info("Starting BLE scan for NUS devices...")
+            _LOGGER.info("[CONFIG FLOW] Starting BLE scan for devices (no service filter)...")
             try:
+                _LOGGER.info("[CONFIG FLOW] Calling scan_for_devices with hass context")
                 devices = await GateControllerBLE.scan_for_devices(
                     hass=self.hass,
                     timeout=10.0
                 )
-                self._discovered_devices = {
-                    device.address: device.name or device.address
-                    for device in devices
-                }
+                _LOGGER.info(
+                    "[CONFIG FLOW] Scan returned %d device(s)", len(devices)
+                )
+                
+                self._discovered_devices = {}
+                for device in devices:
+                    device_name = device.name or device.address
+                    self._discovered_devices[device.address] = device_name
+                    _LOGGER.info(
+                        "[CONFIG FLOW] Discovered device: %s (%s)",
+                        device_name,
+                        device.address
+                    )
+
+                _LOGGER.info(
+                    "[CONFIG FLOW] Total devices in discovered_devices: %d",
+                    len(self._discovered_devices)
+                )
 
                 if not self._discovered_devices:
+                    _LOGGER.warning(
+                        "[CONFIG FLOW] No devices found after scan"
+                    )
                     # Allow retry by resubmitting the form
                     return self.async_show_form(
                         step_id="scan",
@@ -140,7 +158,12 @@ class ConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
             except Exception as e:
                 error_msg = str(e)
                 error_type = type(e).__name__
-                _LOGGER.exception("Scan failed: %s (type: %s)", error_msg, error_type)
+                _LOGGER.error(
+                    "[CONFIG FLOW ERROR] Scan failed: %s (type: %s)",
+                    error_msg,
+                    error_type,
+                    exc_info=True
+                )
                 
                 # Provide more specific error messages
                 if "permission" in error_msg.lower() or "access" in error_msg.lower():

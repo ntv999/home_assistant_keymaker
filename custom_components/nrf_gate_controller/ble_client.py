@@ -173,7 +173,10 @@ class GateControllerBLE:
         from homeassistant.components import bluetooth as ha_bluetooth
         
         devices = []
-        _LOGGER.info("Scanning for devices with timeout %s seconds...", timeout)
+        _LOGGER.info(
+            "[SCAN] Starting BLE device scan with timeout %s seconds (no service filter for testing)",
+            timeout
+        )
 
         if hass is None:
             # Fallback to direct BleakScanner if no hass context
@@ -209,29 +212,54 @@ class GateControllerBLE:
         # Use Home Assistant Bluetooth API
         try:
             discovered_addresses: set[str] = set()
+            all_discovered_count = 0
             
             def match_callback(
                 service_info: ha_bluetooth.BluetoothServiceInfo,
                 change: ha_bluetooth.BluetoothChange,
             ) -> None:
-                """Callback for device discovery."""
+                """Callback for device discovery - logs all devices for testing."""
+                nonlocal all_discovered_count
                 try:
-                    # Check if device advertises NUS service
+                    all_discovered_count += 1
+                    address = service_info.address
+                    name = getattr(service_info, "name", None) or "Unknown"
                     service_uuids = getattr(service_info, "service_uuids", [])
-                    if NUS_SERVICE_UUID.lower() not in [
+                    rssi = getattr(service_info, "rssi", None)
+                    
+                    # Log all discovered devices for debugging
+                    _LOGGER.info(
+                        "[SCAN DEBUG] Device #%d: Name='%s', Address=%s, RSSI=%s, Services=%s, Change=%s",
+                        all_discovered_count,
+                        name,
+                        address,
+                        rssi,
+                        service_uuids,
+                        change
+                    )
+                    
+                    # Check if device advertises NUS service (for reference, but don't filter)
+                    has_nus_service = NUS_SERVICE_UUID.lower() in [
                         uuid.lower() for uuid in service_uuids
-                    ]:
-                        return
+                    ]
+                    if has_nus_service:
+                        _LOGGER.info(
+                            "[SCAN DEBUG] Device %s has NUS service UUID!", address
+                        )
                     
                     # Apply name filter if provided
                     if name_filter:
-                        name = getattr(service_info, "name", "") or ""
                         if name_filter.lower() not in name.lower():
+                            _LOGGER.debug(
+                                "[SCAN DEBUG] Device %s filtered out by name filter", address
+                            )
                             return
                     
                     # Avoid duplicates
-                    address = service_info.address
                     if address in discovered_addresses:
+                        _LOGGER.debug(
+                            "[SCAN DEBUG] Device %s already in list, skipping", address
+                        )
                         return
                     
                     discovered_addresses.add(address)
@@ -239,52 +267,89 @@ class GateControllerBLE:
                     # Create BLEDevice from service_info
                     device = BLEDevice(
                         address=address,
-                        name=getattr(service_info, "name", None) or address,
+                        name=name or address,
                         details=getattr(service_info, "device", None),
                     )
                     
                     devices.append(device)
                     _LOGGER.info(
-                        "Found device: %s (%s)", 
-                        getattr(service_info, "name", None) or "Unknown", 
-                        address
+                        "[SCAN] Added device to results: %s (%s) - Services: %s", 
+                        name, 
+                        address,
+                        service_uuids
                     )
                 except Exception as e:
-                    _LOGGER.debug("Error in match callback: %s", e)
+                    _LOGGER.error(
+                        "[SCAN ERROR] Error in match callback: %s (type: %s)", 
+                        e, 
+                        type(e).__name__,
+                        exc_info=True
+                    )
             
-            # Register callback for device discovery
+            # Register callback for device discovery - NO FILTER for testing
+            _LOGGER.info(
+                "[SCAN] Registering callback for ALL BLE devices (no service filter)"
+            )
             callback = ha_bluetooth.async_register_callback(
                 hass,
                 match_callback,
-                ha_bluetooth.BluetoothCallbackMatcher(
-                    uuid=NUS_SERVICE_UUID
-                ),
+                ha_bluetooth.BluetoothCallbackMatcher(),  # No filter - match all devices
                 ha_bluetooth.BluetoothScanningMode.ACTIVE,
             )
             
             try:
                 # Wait for discoveries
-                _LOGGER.info("Waiting %s seconds for device discoveries...", timeout)
+                _LOGGER.info(
+                    "[SCAN] Starting scan, waiting %s seconds for device discoveries...", 
+                    timeout
+                )
                 await asyncio.sleep(timeout)
+                _LOGGER.info(
+                    "[SCAN] Scan period ended. Total devices discovered: %d, Added to results: %d",
+                    all_discovered_count,
+                    len(devices)
+                )
             finally:
                 # Unregister callback
+                _LOGGER.debug("[SCAN] Unregistering callback")
                 callback()
             
-            _LOGGER.info("Scan completed, found %d device(s)", len(devices))
+            _LOGGER.info(
+                "[SCAN] Scan completed. Found %d device(s) in results", len(devices)
+            )
             
         except Exception as e:
-            _LOGGER.error("BLE scan error: %s (type: %s)", e, type(e).__name__)
+            _LOGGER.error(
+                "[SCAN ERROR] BLE scan error: %s (type: %s)", 
+                e, 
+                type(e).__name__,
+                exc_info=True
+            )
             # If callback registration fails, try simpler approach
-            _LOGGER.warning("Falling back to checking already discovered devices")
+            _LOGGER.warning(
+                "[SCAN] Falling back to checking already discovered devices"
+            )
             try:
                 # Try to get scanner and check discovered devices
                 scanner = ha_bluetooth.async_get_scanner(hass)
                 if scanner:
+                    _LOGGER.info(
+                        "[SCAN] Scanner available, waiting %s seconds...", timeout
+                    )
                     # Wait a bit for devices to be discovered
                     await asyncio.sleep(timeout)
-                    _LOGGER.info("Using already discovered devices from scanner cache")
+                    _LOGGER.info(
+                        "[SCAN] Using already discovered devices from scanner cache"
+                    )
+                else:
+                    _LOGGER.warning("[SCAN] Scanner not available")
             except Exception as fallback_error:
-                _LOGGER.error("Fallback also failed: %s", fallback_error)
+                _LOGGER.error(
+                    "[SCAN ERROR] Fallback also failed: %s (type: %s)",
+                    fallback_error,
+                    type(fallback_error).__name__,
+                    exc_info=True
+                )
                 raise e
 
         return devices
