@@ -9,6 +9,7 @@ from typing import Any, Callable
 from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
+from bleak_retry_connector import establish_connection
 
 try:
     from homeassistant.core import HomeAssistant
@@ -58,113 +59,19 @@ class GateControllerBLE:
         except Exception:
             return False
 
-    async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
-        """Wait for security/pairing to complete before accessing characteristics.
-        
-        The device starts pairing after connection with a delay (SECURITY_REQUEST_DELAY ≈ 400ms).
-        This function waits for pairing to complete by attempting to access characteristics
-        with retries.
-        
-        Note: If pairing fails (e.g., rejected by Home Assistant), the device may disconnect.
-        This function will detect disconnection and return False.
-        
-        Args:
-            max_attempts: Maximum number of attempts to access characteristics
-            delay: Delay between attempts in seconds
-            
-        Returns:
-            True if security is ready, False if not ready or connection lost
-        """
-        if not self._is_connected():
-            _LOGGER.warning("Connection lost while waiting for security")
-            return False
-        
-        # Initial delay to allow pairing process to start
-        # SECURITY_REQUEST_DELAY is ~400ms, add some buffer
-        await asyncio.sleep(0.6)
-        
-        for attempt in range(max_attempts):
-            # Check connection status before each attempt
-            if not self._is_connected():
-                _LOGGER.warning(
-                    "Connection lost during security wait (attempt %d/%d)",
-                    attempt + 1,
-                    max_attempts
-                )
-                self._connected = False
-                return False
-            
-            try:
-                # Try to get services and access the NUS characteristics
-                # If pairing is not complete, characteristics may not be accessible
-                services = await self.client.get_services()
-                if services:
-                    # Try to access the NUS service and its characteristics
-                    nus_service = services.get_service(NUS_SERVICE_UUID)
-                    if nus_service:
-                        # Verify that we can access the characteristics we need
-                        tx_char = nus_service.get_characteristic(NUS_TX_CHAR_UUID)
-                        rx_char = nus_service.get_characteristic(NUS_RX_CHAR_UUID)
-                        if tx_char and rx_char:
-                            _LOGGER.debug(
-                                "Security ready (attempt %d/%d) - characteristics accessible",
-                                attempt + 1,
-                                max_attempts
-                            )
-                            return True
-                        else:
-                            _LOGGER.debug(
-                                "NUS service found but characteristics not accessible yet (attempt %d/%d)",
-                                attempt + 1,
-                                max_attempts
-                            )
-            except Exception as e:
-                # Check if error is due to disconnection
-                error_str = str(e).lower()
-                if "not connected" in error_str or "disconnected" in error_str:
-                    _LOGGER.warning(
-                        "Connection lost during security wait (attempt %d/%d): %s",
-                        attempt + 1,
-                        max_attempts,
-                        e
-                    )
-                    self._connected = False
-                    return False
-                
-                _LOGGER.debug(
-                    "Security not ready yet (attempt %d/%d): %s",
-                    attempt + 1,
-                    max_attempts,
-                    e,
-                )
-            
-            if attempt < max_attempts - 1:
-                await asyncio.sleep(delay)
-        
-        # Final connection check
-        if not self._is_connected():
-            _LOGGER.warning(
-                "Connection lost after security wait (pairing may have failed)"
-            )
-            self._connected = False
-            return False
-        
-        _LOGGER.warning(
-            "Security may not be ready after %d attempts, proceeding anyway",
-            max_attempts
-        )
-        return False
+    # TEST MODE: _wait_for_security_ready is disabled
+    # TODO: Re-enable after testing basic connection
+    # async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
+    #     """Wait for security/pairing to complete before accessing characteristics."""
+    #     ...
 
     async def connect(self) -> bool:
         """Connect to the device using Home Assistant Bluetooth API.
         
-        Note: The device requires BLE pairing (Just Works) before characteristics
-        are accessible. If pairing fails (error 0x85), Home Assistant may have
-        rejected the pairing request. Ensure pairing mode is enabled on the device
-        (single button click) before connecting.
+        TEST MODE: Simplified connection without pairing/security checks and characteristic access.
         
         Returns:
-            True if connection and pairing succeeded, False otherwise
+            True if connection succeeded, False otherwise
         """
         if self.hass is None:
             _LOGGER.error("Home Assistant context required for connection")
@@ -183,74 +90,26 @@ class GateControllerBLE:
                 _LOGGER.error("Device %s not found in Bluetooth cache", self.address)
                 return False
             
-            # Create BleakClient using BLEDevice from Home Assistant
-            # According to HA docs: use BLEDevice from async_ble_device_from_address
-            # and create BleakClient directly
-            _LOGGER.debug("Creating BleakClient for device: %s", self.address)
-            self.client = BleakClient(ble_device)
-            
-            _LOGGER.info("Connecting to %s...", self.address)
-            await self.client.connect()
+            # Use bleak-retry-connector for more reliable connection
+            _LOGGER.info("Connecting to %s using bleak-retry-connector...", self.address)
+            self.client = await establish_connection(
+                BleakClient,
+                ble_device,
+                self.address,
+                max_attempts=3,
+            )
             self._connected = True
             _LOGGER.info("Connected to %s", self.address)
 
-            # Wait for security/pairing to complete before accessing characteristics
-            # The device requires pairing before characteristics are accessible
-            # Note: If pairing fails (e.g., rejected by Home Assistant), 
-            # the device will disconnect and _wait_for_security_ready will return False
-            _LOGGER.debug("Waiting for security/pairing to complete...")
-            security_ready = await self._wait_for_security_ready()
+            # TEST MODE: Skip all characteristic access for now
+            # TODO: Re-enable after testing basic connection
+            # - Wait for security/pairing
+            # - Subscribe to notifications
+            # - Access characteristics
             
-            # Check if connection is still active after security wait
-            if not self._is_connected():
-                _LOGGER.error(
-                    "Connection lost during pairing. "
-                    "Pairing may have been rejected by Home Assistant. "
-                    "Check if device requires pairing mode to be enabled."
-                )
-                self._connected = False
-                return False
-            
-            if not security_ready:
-                _LOGGER.warning(
-                    "Security may not be ready, but connection is active. "
-                    "Attempting to access characteristics anyway."
-                )
-            
-            _LOGGER.debug("Security ready, accessing characteristics")
-
-            # Subscribe to notifications (now that security is ready)
-            try:
-                # Double-check connection before subscribing
-                if not self._is_connected():
-                    _LOGGER.error("Connection lost before subscribing to notifications")
-                    self._connected = False
-                    return False
-                
-                await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
-                _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
-            except Exception as e:
-                error_str = str(e).lower()
-                if "not connected" in error_str or "disconnected" in error_str:
-                    _LOGGER.error(
-                        "Connection lost before subscribing to notifications. "
-                        "Pairing may have failed: %s",
-                        e
-                    )
-                else:
-                    _LOGGER.error(
-                        "Failed to subscribe to notifications: %s",
-                        e
-                    )
-                # Connection is lost, clean up
-                self._connected = False
-                try:
-                    await self.disconnect()
-                except Exception:
-                    pass  # Ignore errors during cleanup
-                return False
-
+            _LOGGER.info("TEST MODE: Connection established, skipping characteristic access")
             return True
+            
         except Exception as e:
             _LOGGER.error("Failed to connect to %s: %s", self.address, e, exc_info=True)
             self._connected = False
@@ -260,21 +119,7 @@ class GateControllerBLE:
         """Disconnect from the device."""
         if self.client and self._connected:
             try:
-                # Try to stop notifications if they were started
-                # This may fail if service discovery wasn't performed yet
-                try:
-                    if self.client.is_connected:
-                        await self.client.stop_notify(NUS_TX_CHAR_UUID)
-                except Exception as notify_error:
-                    error_str = str(notify_error).lower()
-                    if "service discovery" in error_str or "not been performed" in error_str:
-                        _LOGGER.debug(
-                            "Cannot stop notifications: service discovery not performed yet"
-                        )
-                    else:
-                        _LOGGER.debug("Error stopping notifications: %s", notify_error)
-                
-                # Disconnect from device
+                # TEST MODE: Simplified disconnect without notification handling
                 if self.client.is_connected:
                     await self.client.disconnect()
             except Exception as e:
@@ -318,68 +163,81 @@ class GateControllerBLE:
         except Exception as e:
             _LOGGER.error("Error handling notification: %s", e, exc_info=True)
 
-    async def send_command(self, command: int) -> dict | None:
-        """Send a command to the device."""
-        if not self._is_connected():
-            _LOGGER.error("Not connected")
-            self._connected = False
-            return None
-
-        try:
-            # Create JSON command
-            cmd_json = json.dumps({"cmd": command}) + "*\n"
-            cmd_bytes = cmd_json.encode("utf-8")
-
-            # Send command
-            await self.client.write_gatt_char(NUS_RX_CHAR_UUID, cmd_bytes)
-            _LOGGER.debug("Sent command: %s", cmd_json.strip())
-
-            # Wait a bit for response
-            await asyncio.sleep(0.5)
-
-            return {"status": "sent"}
-
-        except Exception as e:
-            error_str = str(e).lower()
-            if "not connected" in error_str or "disconnected" in error_str:
-                _LOGGER.error("Connection lost while sending command: %s", e)
-                self._connected = False
-            else:
-                _LOGGER.error("Error sending command: %s", e)
-            return None
+    # TEST MODE: All characteristic access methods are disabled
+    # TODO: Re-enable after testing basic connection
+    
+    # async def send_command(self, command: int) -> dict | None:
+    #     """Send a command to the device."""
+    #     if not self._is_connected():
+    #         _LOGGER.error("Not connected")
+    #         self._connected = False
+    #         return None
+    #
+    #     try:
+    #         # Create JSON command
+    #         cmd_json = json.dumps({"cmd": command}) + "*\n"
+    #         cmd_bytes = cmd_json.encode("utf-8")
+    #
+    #         # Send command
+    #         await self.client.write_gatt_char(NUS_RX_CHAR_UUID, cmd_bytes)
+    #         _LOGGER.debug("Sent command: %s", cmd_json.strip())
+    #
+    #         # Wait a bit for response
+    #         await asyncio.sleep(0.5)
+    #
+    #         return {"status": "sent"}
+    #
+    #     except Exception as e:
+    #         error_str = str(e).lower()
+    #         if "not connected" in error_str or "disconnected" in error_str:
+    #             _LOGGER.error("Connection lost while sending command: %s", e)
+    #             self._connected = False
+    #         else:
+    #             _LOGGER.error("Error sending command: %s", e)
+    #         return None
 
     async def get_state(self) -> dict | None:
         """Get current state from the device."""
-        return await self.send_command(17)  # SERVER_COMMAND_SEND
+        _LOGGER.warning("TEST MODE: get_state() is disabled")
+        return None
+        # return await self.send_command(17)  # SERVER_COMMAND_SEND
 
     async def open_gate(self) -> dict | None:
         """Open the gate."""
-        return await self.send_command(1)  # SERVER_COMMAND_OPEN
+        _LOGGER.warning("TEST MODE: open_gate() is disabled")
+        return None
+        # return await self.send_command(1)  # SERVER_COMMAND_OPEN
 
     async def close_gate(self) -> dict | None:
         """Close the gate."""
-        return await self.send_command(3)  # SERVER_COMMAND_CLOSE
+        _LOGGER.warning("TEST MODE: close_gate() is disabled")
+        return None
+        # return await self.send_command(3)  # SERVER_COMMAND_CLOSE
 
     async def stop_gate(self) -> dict | None:
         """Stop the gate."""
-        return await self.send_command(2)  # SERVER_COMMAND_STOP_MIDDLE
+        _LOGGER.warning("TEST MODE: stop_gate() is disabled")
+        return None
+        # return await self.send_command(2)  # SERVER_COMMAND_STOP_MIDDLE
 
     async def set_working_mode(self, working_mode: int) -> dict | None:
         """Set working mode on the device."""
-        mode_commands = {
-            1: CMD_WORKING_MODE_1,  # PP
-            2: CMD_WORKING_MODE_2,  # Open/Close
-            3: CMD_WORKING_MODE_3,  # Door
-            4: CMD_WORKING_MODE_4,  # SCA
-            5: CMD_WORKING_MODE_5,  # SCA Open
-            6: CMD_WORKING_MODE_6,  # SCA Motion
-        }
-        
-        if working_mode not in mode_commands:
-            _LOGGER.error("Invalid working mode: %s", working_mode)
-            return None
-        
-        return await self.send_command(mode_commands[working_mode])
+        _LOGGER.warning("TEST MODE: set_working_mode() is disabled")
+        return None
+        # mode_commands = {
+        #     1: CMD_WORKING_MODE_1,  # PP
+        #     2: CMD_WORKING_MODE_2,  # Open/Close
+        #     3: CMD_WORKING_MODE_3,  # Door
+        #     4: CMD_WORKING_MODE_4,  # SCA
+        #     5: CMD_WORKING_MODE_5,  # SCA Open
+        #     6: CMD_WORKING_MODE_6,  # SCA Motion
+        # }
+        # 
+        # if working_mode not in mode_commands:
+        #     _LOGGER.error("Invalid working mode: %s", working_mode)
+        #     return None
+        # 
+        # return await self.send_command(mode_commands[working_mode])
 
     def set_state_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set callback for state updates."""
