@@ -48,6 +48,69 @@ class GateControllerBLE:
         self._state_callback: Callable[[int, int], None] | None = None
         self._connected = False
 
+    async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
+        """Wait for security/pairing to complete before accessing characteristics.
+        
+        The device starts pairing after connection with a delay (SECURITY_REQUEST_DELAY ≈ 400ms).
+        This function waits for pairing to complete by attempting to access characteristics
+        with retries.
+        
+        Args:
+            max_attempts: Maximum number of attempts to access characteristics
+            delay: Delay between attempts in seconds
+            
+        Returns:
+            True if security is ready, False otherwise
+        """
+        if not self.client or not self._connected:
+            return False
+        
+        # Initial delay to allow pairing process to start
+        # SECURITY_REQUEST_DELAY is ~400ms, add some buffer
+        await asyncio.sleep(0.6)
+        
+        for attempt in range(max_attempts):
+            try:
+                # Try to get services and access the NUS characteristics
+                # If pairing is not complete, characteristics may not be accessible
+                services = await self.client.get_services()
+                if services:
+                    # Try to access the NUS service and its characteristics
+                    nus_service = services.get_service(NUS_SERVICE_UUID)
+                    if nus_service:
+                        # Verify that we can access the characteristics we need
+                        tx_char = nus_service.get_characteristic(NUS_TX_CHAR_UUID)
+                        rx_char = nus_service.get_characteristic(NUS_RX_CHAR_UUID)
+                        if tx_char and rx_char:
+                            _LOGGER.debug(
+                                "Security ready (attempt %d/%d) - characteristics accessible",
+                                attempt + 1,
+                                max_attempts
+                            )
+                            return True
+                        else:
+                            _LOGGER.debug(
+                                "NUS service found but characteristics not accessible yet (attempt %d/%d)",
+                                attempt + 1,
+                                max_attempts
+                            )
+            except Exception as e:
+                _LOGGER.debug(
+                    "Security not ready yet (attempt %d/%d): %s",
+                    attempt + 1,
+                    max_attempts,
+                    e,
+                )
+            
+            if attempt < max_attempts - 1:
+                await asyncio.sleep(delay)
+        
+        _LOGGER.warning(
+            "Security may not be ready after %d attempts, proceeding anyway",
+            max_attempts
+        )
+        return False
+
     async def connect(self) -> bool:
         """Connect to the device using Home Assistant Bluetooth API."""
         if self.hass is None:
@@ -78,9 +141,24 @@ class GateControllerBLE:
             self._connected = True
             _LOGGER.info("Connected to %s", self.address)
 
-            # Subscribe to notifications
-            await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
-            _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
+            # Wait for security/pairing to complete before accessing characteristics
+            # The device requires pairing before characteristics are accessible
+            _LOGGER.debug("Waiting for security/pairing to complete...")
+            await self._wait_for_security_ready()
+            _LOGGER.debug("Security ready, accessing characteristics")
+
+            # Subscribe to notifications (now that security is ready)
+            try:
+                await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
+                _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
+            except Exception as e:
+                _LOGGER.error(
+                    "Failed to subscribe to notifications (security may not be ready): %s",
+                    e
+                )
+                # Try to disconnect and return False
+                await self.disconnect()
+                return False
 
             return True
         except Exception as e:
