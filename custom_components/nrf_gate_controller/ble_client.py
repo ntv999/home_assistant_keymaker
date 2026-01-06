@@ -49,21 +49,30 @@ class GateControllerBLE:
         self._state_callback: Callable[[int, int], None] | None = None
         self._connected = False
 
+    #def _is_connected(self) -> bool:
+    #    """Check if client is connected and connection is still active."""
+    #    if not self.client or not self._connected:
+    #        return False
+    #    try:
+    #        # Check if client reports as connected
+    #        return self.client.is_connected
+    #    except Exception:
+    #        return False
+
     def _is_connected(self) -> bool:
-        """Check if client is connected and connection is still active."""
-        if not self.client or not self._connected:
-            return False
-        try:
-            # Check if client reports as connected
-            return self.client.is_connected
-        except Exception:
-            return False
+        return bool(self.client and self.client.is_connected)
 
     # TEST MODE: _wait_for_security_ready is disabled
     # TODO: Re-enable after testing basic connection
     # async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
     #     """Wait for security/pairing to complete before accessing characteristics."""
     #     ...
+
+    def _on_disconnect(self, client):
+        """Handle disconnection event."""
+        _LOGGER.debug("Disconnected from %s", client.address)
+        self._connected = False
+        
 
     async def connect(self) -> bool:
         """Connect to the device using Home Assistant Bluetooth API.
@@ -91,15 +100,23 @@ class GateControllerBLE:
                 return False
             
             # Use bleak-retry-connector for more reliable connection
+            # Note: establish_connection may perform service discovery automatically
+            # which could trigger pairing. We'll monitor this.
             _LOGGER.info("Connecting to %s using bleak-retry-connector...", self.address)
-            self.client = await establish_connection(
-                BleakClient,
+            _LOGGER.debug("TEST MODE: establish_connection may trigger service discovery")
+            
+            self.client = BleakClient(ble_device, disconnected_callback=self._on_disconnect)
+            
+            await establish_connection(
+                self.client,
                 ble_device,
                 self.address,
                 max_attempts=3,
             )
+
             self._connected = True
             _LOGGER.info("Connected to %s", self.address)
+            _LOGGER.debug("Connection established, is_connected=%s", self.client.is_connected)
 
             # TEST MODE: Skip all characteristic access for now
             # TODO: Re-enable after testing basic connection
