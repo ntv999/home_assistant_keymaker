@@ -39,10 +39,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Create coordinator
     coordinator = GateControllerCoordinator(hass, ble_client)
     
-    # TEST MODE: Skip initial data fetch
-    _LOGGER.info("TEST MODE: Skipping initial data fetch from coordinator")
-    # TODO: Re-enable after testing basic connection
-    # await coordinator.async_config_entry_first_refresh()
+    # Fetch initial data
+    await coordinator.async_config_entry_first_refresh()
     
     hass.data[DOMAIN][entry.entry_id] = {
         "ble_client": ble_client,

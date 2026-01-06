@@ -62,12 +62,6 @@ class GateControllerBLE:
     def _is_connected(self) -> bool:
         return bool(self.client and self.client.is_connected)
 
-    # TEST MODE: _wait_for_security_ready is disabled
-    # TODO: Re-enable after testing basic connection
-    # async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
-    #     """Wait for security/pairing to complete before accessing characteristics."""
-    #     ...
-
     def _on_disconnect(self, client):
         """Handle disconnection event."""
         _LOGGER.debug("Disconnected from %s", client.address)
@@ -77,10 +71,8 @@ class GateControllerBLE:
     async def connect(self) -> bool:
         """Connect to the device using Home Assistant Bluetooth API.
         
-        TEST MODE: Simplified connection without pairing/security checks and characteristic access.
-        
         Returns:
-            True if connection succeeded, False otherwise
+            True if connection and setup succeeded, False otherwise
         """
         if self.hass is None:
             _LOGGER.error("Home Assistant context required for connection")
@@ -116,13 +108,15 @@ class GateControllerBLE:
             _LOGGER.info("Connected to %s", self.address)
             _LOGGER.debug("Connection established, is_connected=%s", self.client.is_connected)
 
-            # TEST MODE: Skip all characteristic access for now
-            # TODO: Re-enable after testing basic connection
-            # - Wait for security/pairing
-            # - Subscribe to notifications
-            # - Access characteristics
-            
-            _LOGGER.info("TEST MODE: Connection established, skipping characteristic access")
+            # Subscribe to notifications for automatic state updates
+            try:
+                await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
+                _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
+            except Exception as e:
+                _LOGGER.error("Failed to subscribe to notifications: %s", e)
+                await self.disconnect()
+                return False
+
             return True
             
         except Exception as e:
@@ -134,7 +128,20 @@ class GateControllerBLE:
         """Disconnect from the device."""
         if self.client and self._connected:
             try:
-                # TEST MODE: Simplified disconnect without notification handling
+                # Try to stop notifications if they were started
+                try:
+                    if self.client.is_connected:
+                        await self.client.stop_notify(NUS_TX_CHAR_UUID)
+                except Exception as notify_error:
+                    error_str = str(notify_error).lower()
+                    if "service discovery" in error_str or "not been performed" in error_str:
+                        _LOGGER.debug(
+                            "Cannot stop notifications: service discovery not performed yet"
+                        )
+                    else:
+                        _LOGGER.debug("Error stopping notifications: %s", notify_error)
+                
+                # Disconnect from device
                 if self.client.is_connected:
                     await self.client.disconnect()
             except Exception as e:
@@ -178,81 +185,68 @@ class GateControllerBLE:
         except Exception as e:
             _LOGGER.error("Error handling notification: %s", e, exc_info=True)
 
-    # TEST MODE: All characteristic access methods are disabled
-    # TODO: Re-enable after testing basic connection
-    
-    # async def send_command(self, command: int) -> dict | None:
-    #     """Send a command to the device."""
-    #     if not self._is_connected():
-    #         _LOGGER.error("Not connected")
-    #         self._connected = False
-    #         return None
-    #
-    #     try:
-    #         # Create JSON command
-    #         cmd_json = json.dumps({"cmd": command}) + "*\n"
-    #         cmd_bytes = cmd_json.encode("utf-8")
-    #
-    #         # Send command
-    #         await self.client.write_gatt_char(NUS_RX_CHAR_UUID, cmd_bytes)
-    #         _LOGGER.debug("Sent command: %s", cmd_json.strip())
-    #
-    #         # Wait a bit for response
-    #         await asyncio.sleep(0.5)
-    #
-    #         return {"status": "sent"}
-    #
-    #     except Exception as e:
-    #         error_str = str(e).lower()
-    #         if "not connected" in error_str or "disconnected" in error_str:
-    #             _LOGGER.error("Connection lost while sending command: %s", e)
-    #             self._connected = False
-    #         else:
-    #             _LOGGER.error("Error sending command: %s", e)
-    #         return None
+    async def send_command(self, command: int) -> dict | None:
+        """Send a command to the device."""
+        if not self._is_connected():
+            _LOGGER.error("Not connected")
+            self._connected = False
+            return None
+
+        try:
+            # Create JSON command
+            cmd_json = json.dumps({"cmd": command}) + "*\n"
+            cmd_bytes = cmd_json.encode("utf-8")
+
+            # Send command
+            await self.client.write_gatt_char(NUS_RX_CHAR_UUID, cmd_bytes)
+            _LOGGER.debug("Sent command: %s", cmd_json.strip())
+
+            # Wait a bit for response
+            await asyncio.sleep(0.5)
+
+            return {"status": "sent"}
+
+        except Exception as e:
+            error_str = str(e).lower()
+            if "not connected" in error_str or "disconnected" in error_str:
+                _LOGGER.error("Connection lost while sending command: %s", e)
+                self._connected = False
+            else:
+                _LOGGER.error("Error sending command: %s", e)
+            return None
 
     async def get_state(self) -> dict | None:
         """Get current state from the device."""
-        _LOGGER.warning("TEST MODE: get_state() is disabled")
-        return None
-        # return await self.send_command(17)  # SERVER_COMMAND_SEND
+        return await self.send_command(17)  # SERVER_COMMAND_SEND
 
     async def open_gate(self) -> dict | None:
         """Open the gate."""
-        _LOGGER.warning("TEST MODE: open_gate() is disabled")
-        return None
-        # return await self.send_command(1)  # SERVER_COMMAND_OPEN
+        return await self.send_command(1)  # SERVER_COMMAND_OPEN
 
     async def close_gate(self) -> dict | None:
         """Close the gate."""
-        _LOGGER.warning("TEST MODE: close_gate() is disabled")
-        return None
-        # return await self.send_command(3)  # SERVER_COMMAND_CLOSE
+        return await self.send_command(3)  # SERVER_COMMAND_CLOSE
 
     async def stop_gate(self) -> dict | None:
         """Stop the gate."""
-        _LOGGER.warning("TEST MODE: stop_gate() is disabled")
-        return None
-        # return await self.send_command(2)  # SERVER_COMMAND_STOP_MIDDLE
+        return await self.send_command(2)  # SERVER_COMMAND_STOP_MIDDLE
 
     async def set_working_mode(self, working_mode: int) -> dict | None:
         """Set working mode on the device."""
-        _LOGGER.warning("TEST MODE: set_working_mode() is disabled")
-        return None
-        # mode_commands = {
-        #     1: CMD_WORKING_MODE_1,  # PP
-        #     2: CMD_WORKING_MODE_2,  # Open/Close
-        #     3: CMD_WORKING_MODE_3,  # Door
-        #     4: CMD_WORKING_MODE_4,  # SCA
-        #     5: CMD_WORKING_MODE_5,  # SCA Open
-        #     6: CMD_WORKING_MODE_6,  # SCA Motion
-        # }
-        # 
-        # if working_mode not in mode_commands:
-        #     _LOGGER.error("Invalid working mode: %s", working_mode)
-        #     return None
-        # 
-        # return await self.send_command(mode_commands[working_mode])
+        mode_commands = {
+            1: CMD_WORKING_MODE_1,  # PP
+            2: CMD_WORKING_MODE_2,  # Open/Close
+            3: CMD_WORKING_MODE_3,  # Door
+            4: CMD_WORKING_MODE_4,  # SCA
+            5: CMD_WORKING_MODE_5,  # SCA Open
+            6: CMD_WORKING_MODE_6,  # SCA Motion
+        }
+        
+        if working_mode not in mode_commands:
+            _LOGGER.error("Invalid working mode: %s", working_mode)
+            return None
+        
+        return await self.send_command(mode_commands[working_mode])
 
     def set_state_callback(self, callback: Callable[[int, int], None]) -> None:
         """Set callback for state updates."""
