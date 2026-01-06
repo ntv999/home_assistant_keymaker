@@ -4,10 +4,18 @@ from typing import Final
 DOMAIN: Final = "nrf_gate_controller"
 
 # Nordic UART Service UUIDs
-NUS_BASE_UUID: Final = "6e400001-b5a3-f393-e0a9-e50e24dcca9e"
-NUS_SERVICE_UUID: Final = NUS_BASE_UUID
-NUS_RX_CHAR_UUID: Final = "6e400002-b5a3-f393-e0a9-e50e24dcca9e"  # Write
-NUS_TX_CHAR_UUID: Final = "6e400003-b5a3-f393-e0a9-e50e24dcca9e"  # Notify
+# NOTE: Firmware uses NUS UUIDs with +5 offset (see secure_nus.c: uuid = BLE_UUID_xxx + 5)
+# Standard NUS:
+#   Service: 6e400001-b5a3-f393-e0a9-e50e24dcca9e
+#   RX:      6e400002-b5a3-f393-e0a9-e50e24dcca9e
+#   TX:      6e400003-b5a3-f393-e0a9-e50e24dcca9e
+# Firmware (offset +5):
+#   Service: 6e400006-b5a3-f393-e0a9-e50e24dcca9e
+#   RX:      6e400007-b5a3-f393-e0a9-e50e24dcca9e
+#   TX:      6e400008-b5a3-f393-e0a9-e50e24dcca9e
+NUS_SERVICE_UUID: Final = "6e400006-b5a3-f393-e0a9-e50e24dcca9e"
+NUS_RX_CHAR_UUID: Final = "6e400007-b5a3-f393-e0a9-e50e24dcca9e"  # Write
+NUS_TX_CHAR_UUID: Final = "6e400008-b5a3-f393-e0a9-e50e24dcca9e"  # Notify
 
 # Gate States (from main_message_handler.h)
 STATE_OPENED: Final = 0
