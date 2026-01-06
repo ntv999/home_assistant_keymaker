@@ -1,0 +1,51 @@
+{
+    "config": {
+      "step": {
+        "user": {
+          "title": "Настройка контроллера ворот nRF",
+          "description": "Выберите метод подключения к устройству",
+          "data": {
+            "method": "Метод подключения"
+          }
+        },
+        "scan": {
+          "title": "Выбор устройства",
+          "description": "Найдено устройств: {count}",
+          "data": {
+            "address": "Выберите устройство",
+            "name": "Имя устройства"
+          }
+        },
+        "manual": {
+          "title": "Ручной ввод MAC-адреса",
+          "description": "Введите MAC-адрес устройства в формате XX:XX:XX:XX:XX:XX",
+          "data": {
+            "address": "MAC-адрес устройства",
+            "name": "Имя устройства"
+          }
+        },
+        "working_mode": {
+          "title": "Настройка режима работы",
+          "description": "Настройка устройства: {name}",
+          "data": {
+            "working_mode": "Режим работы ворот"
+          }
+        }
+      },
+      "error": {
+        "cannot_connect": "Не удалось подключиться к устройству. Проверьте MAC-адрес и убедитесь, что устройство включено.",
+        "invalid_address": "Неверный формат MAC-адреса. Используйте формат XX:XX:XX:XX:XX:XX",
+        "invalid_working_mode": "Выбран неверный режим работы",
+        "no_devices_found": "Устройства не найдены. Убедитесь, что устройство включено и находится в режиме сопряжения.",
+        "scan_failed": "Ошибка при сканировании устройств: {error}",
+        "scan_permission_denied": "Нет доступа к Bluetooth. Проверьте разрешения.",
+        "bluetooth_not_available": "Bluetooth адаптер недоступен",
+        "bluetooth_adapter_error": "Ошибка Bluetooth адаптера",
+        "unknown": "Произошла неизвестная ошибка"
+      },
+      "abort": {
+        "already_configured": "Это устройство уже настроено",
+        "bluetooth_not_available": "Bluetooth недоступен на этом устройстве"
+      }
+    }
+  }

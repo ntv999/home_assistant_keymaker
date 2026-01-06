@@ -48,8 +48,12 @@ async def validate_input(hass: HomeAssistant, data: dict[str, Any]) -> dict[str,
     ]:
         raise InvalidWorkingMode
     
-    # Try to connect
-    ble_client = GateControllerBLE(address=address, name=data.get("name"))
+    # Try to connect using Home Assistant Bluetooth API
+    ble_client = GateControllerBLE(
+        address=address, 
+        name=data.get("name"),
+        hass=hass,
+    )
     try:
         connected = await ble_client.connect()
         if not connected:

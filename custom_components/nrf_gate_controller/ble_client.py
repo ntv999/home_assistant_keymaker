@@ -4,12 +4,11 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-from typing import Callable
+from typing import Any, Callable
 
-from bleak import BleakClient, BleakScanner
+from bleak import BleakClient
 from bleak.backends.characteristic import BleakGATTCharacteristic
 from bleak.backends.device import BLEDevice
-from bleak.backends.scanner import AdvertisementData
 
 try:
     from homeassistant.core import HomeAssistant
@@ -32,30 +31,60 @@ _LOGGER = logging.getLogger(__name__)
 
 
 class GateControllerBLE:
-    """BLE client for NRF Gate Controller."""
+    """BLE client for NRF Gate Controller using Home Assistant Bluetooth API."""
 
-    def __init__(self, address: str, name: str | None = None) -> None:
+    def __init__(
+        self, 
+        address: str, 
+        name: str | None = None,
+        hass: HomeAssistant | None = None
+    ) -> None:
         """Initialize the BLE client."""
         self.address = address
         self.name = name
+        self.hass = hass
+        # BleakClient instance (using BLEDevice from Home Assistant)
         self.client: BleakClient | None = None
         self._state_callback: Callable[[int, int], None] | None = None
         self._connected = False
 
     async def connect(self) -> bool:
-        """Connect to the device."""
+        """Connect to the device using Home Assistant Bluetooth API."""
+        if self.hass is None:
+            _LOGGER.error("Home Assistant context required for connection")
+            return False
+        
+        from homeassistant.components import bluetooth as ha_bluetooth
+        
         try:
-            self.client = BleakClient(self.address)
+            # Get BLE device from Home Assistant
+            _LOGGER.debug("Getting BLE device for address: %s", self.address)
+            ble_device = ha_bluetooth.async_ble_device_from_address(
+                self.hass, self.address, connectable=True
+            )
+            
+            if ble_device is None:
+                _LOGGER.error("Device %s not found in Bluetooth cache", self.address)
+                return False
+            
+            # Create BleakClient using BLEDevice from Home Assistant
+            # According to HA docs: use BLEDevice from async_ble_device_from_address
+            # and create BleakClient directly
+            _LOGGER.debug("Creating BleakClient for device: %s", self.address)
+            self.client = BleakClient(ble_device)
+            
+            _LOGGER.info("Connecting to %s...", self.address)
             await self.client.connect()
             self._connected = True
             _LOGGER.info("Connected to %s", self.address)
 
             # Subscribe to notifications
             await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
+            _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
 
             return True
         except Exception as e:
-            _LOGGER.error("Failed to connect: %s", e)
+            _LOGGER.error("Failed to connect to %s: %s", self.address, e, exc_info=True)
             self._connected = False
             return False
 
@@ -74,13 +103,14 @@ class GateControllerBLE:
     def _notification_handler(
         self, sender: BleakGATTCharacteristic, data: bytearray
     ) -> None:
-        """Handle notifications from the device."""
+        """Handle notifications from the device (including automatic state updates)."""
         try:
             # Convert bytes to string
             message = data.decode("utf-8")
-            _LOGGER.debug("Received: %s", message)
+            _LOGGER.debug("Received notification: %s", message)
 
             # Parse JSON response
+            # Handle messages that may be split across multiple notifications
             if "*" in message:
                 message = message.split("*")[0]  # Remove terminator
 
@@ -89,13 +119,17 @@ class GateControllerBLE:
                 if "state" in response and "mode" in response:
                     state = response["state"]
                     mode = response["mode"]
+                    _LOGGER.debug("Parsed state update: state=%d, mode=%d", state, mode)
                     if self._state_callback:
+                        # Callback will update coordinator with automatic state change
                         self._state_callback(state, mode)
+                else:
+                    _LOGGER.debug("Notification does not contain state/mode: %s", response)
             except json.JSONDecodeError:
-                _LOGGER.warning("Failed to parse JSON: %s", message)
+                _LOGGER.warning("Failed to parse JSON from notification: %s", message)
 
         except Exception as e:
-            _LOGGER.error("Error handling notification: %s", e)
+            _LOGGER.error("Error handling notification: %s", e, exc_info=True)
 
     async def send_command(self, command: int) -> dict | None:
         """Send a command to the device."""
@@ -165,12 +199,24 @@ class GateControllerBLE:
 
     @staticmethod
     async def scan_for_devices(
-        hass: HomeAssistant | None = None,
+        hass: HomeAssistant,
         timeout: float = 10.0, 
         name_filter: str | None = None
     ) -> list[BLEDevice]:
-        """Scan for gate controller devices using Home Assistant Bluetooth API."""
+        """Scan for gate controller devices using Home Assistant Bluetooth API.
+        
+        Args:
+            hass: Home Assistant instance (required)
+            timeout: Scan timeout in seconds
+            name_filter: Optional name filter
+            
+        Returns:
+            List of discovered BLEDevice objects
+        """
         from homeassistant.components import bluetooth as ha_bluetooth
+        
+        if hass is None:
+            raise ValueError("Home Assistant context is required for BLE scanning")
         
         devices = []
         _LOGGER.info(
@@ -178,44 +224,13 @@ class GateControllerBLE:
             timeout
         )
 
-        if hass is None:
-            # Fallback to direct BleakScanner if no hass context
-            _LOGGER.warning("No Home Assistant context, using direct BleakScanner")
-            try:
-                def detection_callback(device: BLEDevice, advertisement_data: AdvertisementData):
-                    try:
-                        service_uuids = advertisement_data.service_uuids or []
-                        if NUS_SERVICE_UUID in service_uuids:
-                            if name_filter is None or (
-                                device.name and name_filter.lower() in device.name.lower()
-                            ):
-                                if not any(d.address == device.address for d in devices):
-                                    devices.append(device)
-                                    _LOGGER.info(
-                                        "Found device: %s (%s)", 
-                                        device.name or "Unknown", 
-                                        device.address
-                                    )
-                    except Exception as e:
-                        _LOGGER.debug("Error in detection callback: %s", e)
-
-                scanner = BleakScanner(detection_callback=detection_callback)
-                await scanner.start()
-                await asyncio.sleep(timeout)
-                await scanner.stop()
-                _LOGGER.info("Scan completed, found %d device(s)", len(devices))
-            except Exception as e:
-                _LOGGER.error("BLE scan error: %s (type: %s)", e, type(e).__name__)
-                raise
-            return devices
-
         # Use Home Assistant Bluetooth API
         try:
             discovered_addresses: set[str] = set()
             all_discovered_count = 0
             
             def match_callback(
-                service_info: ha_bluetooth.BluetoothServiceInfo,
+                service_info: ha_bluetooth.BluetoothServiceInfoBleak,
                 change: ha_bluetooth.BluetoothChange,
             ) -> None:
                 """Callback for device discovery - logs all devices for testing."""
@@ -264,14 +279,18 @@ class GateControllerBLE:
                     
                     discovered_addresses.add(address)
                     
-                    # Create BLEDevice from service_info
-                    device = BLEDevice(
-                        address=address,
-                        name=name or address,
-                        details=getattr(service_info, "device", None),
-                    )
+                    # Use BLEDevice from service_info (according to HA docs)
+                    # service_info has a 'device' attribute that is a BLEDevice
+                    ble_device = getattr(service_info, "device", None)
+                    if ble_device is None:
+                        # Fallback: create BLEDevice if not available
+                        ble_device = BLEDevice(
+                            address=address,
+                            name=name or address,
+                            details=None,
+                        )
                     
-                    devices.append(device)
+                    devices.append(ble_device)
                     _LOGGER.info(
                         "[SCAN] Added device to results: %s (%s) - Services: %s", 
                         name, 
@@ -287,13 +306,14 @@ class GateControllerBLE:
                     )
             
             # Register callback for device discovery - NO FILTER for testing
+            # According to HA docs: matcher is a dict, not BluetoothCallbackMatcher object
             _LOGGER.info(
                 "[SCAN] Registering callback for ALL BLE devices (no service filter)"
             )
             callback = ha_bluetooth.async_register_callback(
                 hass,
                 match_callback,
-                ha_bluetooth.BluetoothCallbackMatcher(),  # No filter - match all devices
+                {},  # Empty dict = match all devices (no filter)
                 ha_bluetooth.BluetoothScanningMode.ACTIVE,
             )
             

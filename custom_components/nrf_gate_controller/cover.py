@@ -14,7 +14,15 @@ from homeassistant.core import HomeAssistant
 from homeassistant.helpers.entity_platform import AddEntitiesCallback
 from homeassistant.helpers.update_coordinator import CoordinatorEntity
 
-from .const import DOMAIN, STATE_CLOSED, STATE_CLOSE, STATE_OPEN
+from .const import (
+    DOMAIN,
+    STATE_CLOSED,
+    STATE_CLOSE,
+    STATE_OPEN,
+    STATE_OPENED,
+    STATE_STOP_MIDDLE,
+    STATE_NAMES,
+)
 from .coordinator import GateControllerCoordinator
 
 _LOGGER = logging.getLogger(__name__)
@@ -57,6 +65,26 @@ class GateCoverEntity(CoordinatorEntity, CoverEntity):
         }
 
     @property
+    def current_cover_position(self) -> int | None:
+        """Return current position of cover (0-100)."""
+        state = self.coordinator.data.get("state")
+        if state is None:
+            return None
+        
+        # Map states to positions
+        if state == STATE_CLOSED:
+            return 0
+        elif state == STATE_OPENED:
+            return 100
+        elif state == STATE_STOP_MIDDLE:
+            return 50  # Stopped in middle
+        elif state == STATE_OPEN:
+            return None  # Opening - position unknown
+        elif state == STATE_CLOSE:
+            return None  # Closing - position unknown
+        return None
+
+    @property
     def is_closed(self) -> bool | None:
         """Return if the cover is closed."""
         state = self.coordinator.data.get("state")
@@ -68,13 +96,29 @@ class GateCoverEntity(CoordinatorEntity, CoverEntity):
     def is_opening(self) -> bool:
         """Return if the cover is opening."""
         state = self.coordinator.data.get("state")
+        if state is None:
+            return False
         return state == STATE_OPEN
 
     @property
     def is_closing(self) -> bool:
         """Return if the cover is closing."""
         state = self.coordinator.data.get("state")
+        if state is None:
+            return False
         return state == STATE_CLOSE
+
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        state = self.coordinator.data.get("state")
+        if state is not None:
+            state_name = STATE_NAMES.get(state, f"unknown_{state}")
+            _LOGGER.debug(
+                "Обновление статуса в cover entity: state=%d (%s)",
+                state,
+                state_name
+            )
+        super()._handle_coordinator_update()
 
     async def async_open_cover(self, **kwargs: Any) -> None:
         """Open the cover."""

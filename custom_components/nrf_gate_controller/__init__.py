@@ -20,10 +20,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up nRF Gate Controller from a config entry."""
     hass.data.setdefault(DOMAIN, {})
     
-    # Initialize BLE client
+    # Initialize BLE client with Home Assistant context
     ble_client = GateControllerBLE(
         address=entry.data["address"],
         name=entry.data.get("name"),
+        hass=hass,
     )
     
     try:
