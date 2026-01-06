@@ -100,17 +100,15 @@ class GateControllerBLE:
                 return False
             
             # Use bleak-retry-connector for more reliable connection
-            # Note: establish_connection may perform service discovery automatically
-            # which could trigger pairing. We'll monitor this.
+            # establish_connection creates and connects the client automatically
+            # It handles retries and service discovery
             _LOGGER.info("Connecting to %s using bleak-retry-connector...", self.address)
-            _LOGGER.debug("TEST MODE: establish_connection may trigger service discovery")
             
-            self.client = BleakClient(ble_device, disconnected_callback=self._on_disconnect)
-            
-            await establish_connection(
-                self.client,
+            self.client = await establish_connection(
+                BleakClient,
                 ble_device,
                 self.address,
+                disconnected_callback=self._on_disconnect,
                 max_attempts=3,
             )
 
