@@ -48,6 +48,16 @@ class GateControllerBLE:
         self._state_callback: Callable[[int, int], None] | None = None
         self._connected = False
 
+    def _is_connected(self) -> bool:
+        """Check if client is connected and connection is still active."""
+        if not self.client or not self._connected:
+            return False
+        try:
+            # Check if client reports as connected
+            return self.client.is_connected
+        except Exception:
+            return False
+
     async def _wait_for_security_ready(self, max_attempts: int = 10, delay: float = 0.5) -> bool:
         """Wait for security/pairing to complete before accessing characteristics.
         
@@ -55,14 +65,18 @@ class GateControllerBLE:
         This function waits for pairing to complete by attempting to access characteristics
         with retries.
         
+        Note: If pairing fails (e.g., rejected by Home Assistant), the device may disconnect.
+        This function will detect disconnection and return False.
+        
         Args:
             max_attempts: Maximum number of attempts to access characteristics
             delay: Delay between attempts in seconds
             
         Returns:
-            True if security is ready, False otherwise
+            True if security is ready, False if not ready or connection lost
         """
-        if not self.client or not self._connected:
+        if not self._is_connected():
+            _LOGGER.warning("Connection lost while waiting for security")
             return False
         
         # Initial delay to allow pairing process to start
@@ -70,6 +84,16 @@ class GateControllerBLE:
         await asyncio.sleep(0.6)
         
         for attempt in range(max_attempts):
+            # Check connection status before each attempt
+            if not self._is_connected():
+                _LOGGER.warning(
+                    "Connection lost during security wait (attempt %d/%d)",
+                    attempt + 1,
+                    max_attempts
+                )
+                self._connected = False
+                return False
+            
             try:
                 # Try to get services and access the NUS characteristics
                 # If pairing is not complete, characteristics may not be accessible
@@ -95,6 +119,18 @@ class GateControllerBLE:
                                 max_attempts
                             )
             except Exception as e:
+                # Check if error is due to disconnection
+                error_str = str(e).lower()
+                if "not connected" in error_str or "disconnected" in error_str:
+                    _LOGGER.warning(
+                        "Connection lost during security wait (attempt %d/%d): %s",
+                        attempt + 1,
+                        max_attempts,
+                        e
+                    )
+                    self._connected = False
+                    return False
+                
                 _LOGGER.debug(
                     "Security not ready yet (attempt %d/%d): %s",
                     attempt + 1,
@@ -105,6 +141,14 @@ class GateControllerBLE:
             if attempt < max_attempts - 1:
                 await asyncio.sleep(delay)
         
+        # Final connection check
+        if not self._is_connected():
+            _LOGGER.warning(
+                "Connection lost after security wait (pairing may have failed)"
+            )
+            self._connected = False
+            return False
+        
         _LOGGER.warning(
             "Security may not be ready after %d attempts, proceeding anyway",
             max_attempts
@@ -112,7 +156,16 @@ class GateControllerBLE:
         return False
 
     async def connect(self) -> bool:
-        """Connect to the device using Home Assistant Bluetooth API."""
+        """Connect to the device using Home Assistant Bluetooth API.
+        
+        Note: The device requires BLE pairing (Just Works) before characteristics
+        are accessible. If pairing fails (error 0x85), Home Assistant may have
+        rejected the pairing request. Ensure pairing mode is enabled on the device
+        (single button click) before connecting.
+        
+        Returns:
+            True if connection and pairing succeeded, False otherwise
+        """
         if self.hass is None:
             _LOGGER.error("Home Assistant context required for connection")
             return False
@@ -143,21 +196,58 @@ class GateControllerBLE:
 
             # Wait for security/pairing to complete before accessing characteristics
             # The device requires pairing before characteristics are accessible
+            # Note: If pairing fails (e.g., rejected by Home Assistant), 
+            # the device will disconnect and _wait_for_security_ready will return False
             _LOGGER.debug("Waiting for security/pairing to complete...")
-            await self._wait_for_security_ready()
+            security_ready = await self._wait_for_security_ready()
+            
+            # Check if connection is still active after security wait
+            if not self._is_connected():
+                _LOGGER.error(
+                    "Connection lost during pairing. "
+                    "Pairing may have been rejected by Home Assistant. "
+                    "Check if device requires pairing mode to be enabled."
+                )
+                self._connected = False
+                return False
+            
+            if not security_ready:
+                _LOGGER.warning(
+                    "Security may not be ready, but connection is active. "
+                    "Attempting to access characteristics anyway."
+                )
+            
             _LOGGER.debug("Security ready, accessing characteristics")
 
             # Subscribe to notifications (now that security is ready)
             try:
+                # Double-check connection before subscribing
+                if not self._is_connected():
+                    _LOGGER.error("Connection lost before subscribing to notifications")
+                    self._connected = False
+                    return False
+                
                 await self.client.start_notify(NUS_TX_CHAR_UUID, self._notification_handler)
                 _LOGGER.debug("Subscribed to notifications on %s", NUS_TX_CHAR_UUID)
             except Exception as e:
-                _LOGGER.error(
-                    "Failed to subscribe to notifications (security may not be ready): %s",
-                    e
-                )
-                # Try to disconnect and return False
-                await self.disconnect()
+                error_str = str(e).lower()
+                if "not connected" in error_str or "disconnected" in error_str:
+                    _LOGGER.error(
+                        "Connection lost before subscribing to notifications. "
+                        "Pairing may have failed: %s",
+                        e
+                    )
+                else:
+                    _LOGGER.error(
+                        "Failed to subscribe to notifications: %s",
+                        e
+                    )
+                # Connection is lost, clean up
+                self._connected = False
+                try:
+                    await self.disconnect()
+                except Exception:
+                    pass  # Ignore errors during cleanup
                 return False
 
             return True
@@ -170,10 +260,29 @@ class GateControllerBLE:
         """Disconnect from the device."""
         if self.client and self._connected:
             try:
-                await self.client.stop_notify(NUS_TX_CHAR_UUID)
-                await self.client.disconnect()
+                # Try to stop notifications if they were started
+                # This may fail if service discovery wasn't performed yet
+                try:
+                    if self.client.is_connected:
+                        await self.client.stop_notify(NUS_TX_CHAR_UUID)
+                except Exception as notify_error:
+                    error_str = str(notify_error).lower()
+                    if "service discovery" in error_str or "not been performed" in error_str:
+                        _LOGGER.debug(
+                            "Cannot stop notifications: service discovery not performed yet"
+                        )
+                    else:
+                        _LOGGER.debug("Error stopping notifications: %s", notify_error)
+                
+                # Disconnect from device
+                if self.client.is_connected:
+                    await self.client.disconnect()
             except Exception as e:
-                _LOGGER.error("Error disconnecting: %s", e)
+                error_str = str(e).lower()
+                if "not connected" in error_str or "disconnected" in error_str:
+                    _LOGGER.debug("Already disconnected: %s", e)
+                else:
+                    _LOGGER.error("Error disconnecting: %s", e)
             finally:
                 self._connected = False
                 self.client = None
@@ -211,8 +320,9 @@ class GateControllerBLE:
 
     async def send_command(self, command: int) -> dict | None:
         """Send a command to the device."""
-        if not self.client or not self._connected:
+        if not self._is_connected():
             _LOGGER.error("Not connected")
+            self._connected = False
             return None
 
         try:
@@ -230,7 +340,12 @@ class GateControllerBLE:
             return {"status": "sent"}
 
         except Exception as e:
-            _LOGGER.error("Error sending command: %s", e)
+            error_str = str(e).lower()
+            if "not connected" in error_str or "disconnected" in error_str:
+                _LOGGER.error("Connection lost while sending command: %s", e)
+                self._connected = False
+            else:
+                _LOGGER.error("Error sending command: %s", e)
             return None
 
     async def get_state(self) -> dict | None:
@@ -273,7 +388,7 @@ class GateControllerBLE:
     @property
     def is_connected(self) -> bool:
         """Check if connected."""
-        return self._connected
+        return self._is_connected()
 
     @staticmethod
     async def scan_for_devices(
